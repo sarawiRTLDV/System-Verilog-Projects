@@ -13,7 +13,8 @@ class transaction;
   
   rand bit rd, wr;
   rand bit[7:0] data_in;
-  bit full, empty;
+  bit full;
+  bit empty;
   bit [7:0] data_out;
   
   constraint wr_rd{
@@ -39,7 +40,7 @@ class transaction;
   function transaction copy();
     copy = new();
     copy.wr = this.wr;
-    copy.rd = this.wr;
+    copy.rd = this.rd;
     copy.data_in = this.data_in;
     copy.data_out = this.data_out;
     copy.full = this.full;
@@ -86,7 +87,7 @@ class generator;
   
   task run();
     repeat(count) begin
-      assert(trans.randomize)else $error("Randomization FAILED");
+      assert(trans.randomize())else $error("Randomization FAILED");
       mbx.put(trans.copy());
       trans.display("GEN");
       @(next);// here we are waiting to receive a flag from other classes
@@ -133,7 +134,7 @@ class driver;
   transaction datac;// this is our data container
   mailbox #(transaction) mbx;
   
-  event next;
+  //event next;
   
   function new(mailbox #(transaction)mbx);
     this.mbx = mbx;
@@ -159,7 +160,7 @@ class driver;
       interf.rd <= datac.rd;
       interf.data_in <= datac.data_in;
       repeat(2) @(posedge interf.clock);
-      ->next;
+      //->next;
     end
     
   endtask
@@ -232,6 +233,8 @@ class monitor;
   transaction trans;
   mailbox #(transaction) mbx;
   
+ // event next;
+  
   function new(mailbox #(transaction)mbx);
     this.mbx = mbx;
   endfunction
@@ -246,9 +249,9 @@ class monitor;
       trans.data_out = interf.data_out;
       trans.full = interf.full;
       trans.empty = interf.empty;
-      trans.empty = interf.rst;
-      mbx.put(trans);
+      mbx.put(trans.copy());
       trans.display("MON");
+      //@(next);
     end
   endtask
 endclass
@@ -281,7 +284,7 @@ class scoreboard;
   task run();
     
     forever begin
-      #40;
+      
       mbx.get(trans);
       trans.display("SCO");
       
@@ -290,7 +293,7 @@ class scoreboard;
            din.push_front(trans.data_in);
           $display("DATA is pushed into the queue");
         end
-        else $display("The queue is full");
+        else $display("The FIFO is full");
       end
       
       if(trans.rd == 1'b1) begin
@@ -299,11 +302,11 @@ class scoreboard;
             temp = din.pop_back();
 
             if(trans.data_out == temp) begin
-              $display("DATA is MACHED %0d", trans.data_out);
+              $display("DATA is MACHED");
             end
-          else $display("DATA MISSMACH %0d", trans.data_out);
+          else $error("DATA MISSMACH");
         end
-        else $display("the Queue is EMPTY");
+        else $display("the FIFO is EMPTY");
       end
       -> next;
     end
@@ -314,10 +317,8 @@ endclass
 
 //let's test our scoreboard class
 
-module tb;
+/*module tb;
   
-  generator gen;
-  driver drv;
   scoreboard sco;
   monitor mon;
   mailbox #(transaction) mbx;
@@ -336,25 +337,17 @@ module tb;
   
   initial begin
     mbx = new();
-    gen = new(mbx);
-    drv = new(mbx);
     mon = new(mbx);
     sco = new(mbx);
-    
-    //drv.next = next;
-    gen.next = next;
+    mon.next = next;
     sco.next = next;
-    drv.interf = interf;
     mon.interf = interf;
-    gen.count = 10;
    
   end
   
   initial begin
     fork
-      gen.run();
-      //drv.reset();
-      drv.run();
+      mon.run();
       sco.run();
     join
     
@@ -367,6 +360,100 @@ module tb;
   
   initial begin
     $dumpfile("dump.vcd"); $dumpvars;
+  end
+  
+endmodule
+*/
+
+class envirnment;  
+  generator gen;
+  driver drv;
+  monitor mon;
+  scoreboard sco;
+  
+  mailbox #(transaction) gdmbx;
+  
+  mailbox #(transaction) msmbx;
+  
+  virtual fifo_if interf;
+  
+  event gsnext;
+  
+  function new(virtual fifo_if intf);
+    
+    
+    gdmbx = new();
+    gen = new(gdmbx);
+    drv = new(gdmbx);
+    
+    msmbx = new();
+    mon = new(msmbx);
+    sco = new(msmbx);
+    
+    this.interf = intf;
+    drv.interf = this.interf;
+    mon.interf = this.interf;
+    
+    gen.next = gsnext;
+    sco.next = gsnext;
+    
+  endfunction
+  
+  task pre_test();
+    drv.reset();
+  endtask
+  
+  task test();
+    
+    fork
+      gen.run();
+      drv.run();
+      mon.run();
+      sco.run();
+    join_any
+  endtask
+  
+  task pos_test();
+    wait(gen.done.triggered);
+    $finish();
+  endtask
+  
+  task run();
+    
+    pre_test();
+    test();
+    pos_test();
+    
+  endtask
+  
+endclass
+
+
+
+module tb;
+  
+  envirnment env;
+  
+  mailbox #(transaction) mbx;
+  fifo_if interf();
+  
+  fifo dut(interf.clock, interf.rd, interf.wr, interf.full, interf.empty, interf.data_in, interf.data_out, interf.rst);
+  
+  
+  initial begin
+    interf.clock <= 0;
+  end
+  
+  always begin
+    #10;
+    interf.clock <= ~interf.clock;
+  end
+  
+  initial begin
+    
+    env = new(interf);
+    env.gen.count = 20;
+    env.run();
   end
   
 endmodule
