@@ -1,402 +1,196 @@
-/*after understanding the design, we are ready to preceed with our verification process*/
-
-// 1->first of all lets create our transaction class
-/*
--> Add (2s/4s) variables for all ports (DUT) except globl signals 
--> add modifier for input ports
--> Constraints
--> methods: such as printing values, copy
-
-*/
 
 class transaction;
-  
-  rand bit rd, wr;
-  rand bit[7:0] data_in;
-  bit full;
-  bit empty;
-  bit [7:0] data_out;
-  
-  constraint wr_rd{
-    wr dist {1:/ 50, 0:/ 50};
-    rd dist {1:/ 50, 0:/ 50};
-   /* wr == 1 <-> rd == 0;
-    wr == 0 <-> rd == 1;*/
-    // or we could just use this
-    wr != rd;
-  }
-  constraint datain{
-  	data_in > 1; data_in < 5;
-  }
-  
-  // we have to create our display function which will be used by all the classes 
-  
-  function void display(string tag);
-    $display("[%0s]:\t WR = %0b\t RD = %0b\t DATAWR = %0d\t DATARD = %0d\t FULL = %0b\t EMPTY = %0b\t at-> %0t",tag, wr, rd, data_in, data_out, full, empty, $time);
-  endfunction
-  
-  // now we have to create the copy function since we want to use a deep copy
+  rand bit din;
+  bit dout;
   
   function transaction copy();
     copy = new();
-    copy.wr = this.wr;
-    copy.rd = this.rd;
-    copy.data_in = this.data_in;
-    copy.data_out = this.data_out;
-    copy.full = this.full;
-    copy.empty = this.empty;
+    copy.din = this.din;
+    copy.dout = this.dout;
   endfunction
   
-endclass
-
-// to test our transaction class we use a tb example
-/*
-module tb;
-  transaction tr;
+  function void display(input string tag);
+    $display("[%0s] : DIN : %0b DOUT : %0b", tag,din, dout);
+  endfunction
   
-  initial begin
-    tr = new();
-    tr.randomize();
-    tr.display("TB");
-  end
-endmodule
-*/
-
-// lets create our generator class
-
-/* the tasks for a generator are:
--> Randomize transaction
--> send transactions to the driver class
--> sense Event from SCO and driver before sending the next transaction
-*/
-
+  
+endclass
+ 
+//////////////////////////////////////////////////
 class generator;
   
-  transaction trans;
-  mailbox #(transaction)mbx;
+  transaction tr;
+  mailbox #(transaction) mbx;
+  mailbox #(transaction) mbxref;
+  event sconext;
+  event done;
+  int count;
   
-  int count = 0; // here we will specify how many transaction we want to generate 
-  event next;// to know when to send next transaction
-  event done;// to conveys the complition of requested number of transactions
   
-  function new(mailbox #(transaction)mbx);
-    this.mbx = mbx;
-    this.trans = new();
+  function new( mailbox #(transaction) mbx,  mailbox #(transaction) mbxref);
+   this.mbx = mbx;
+   this.mbxref = mbxref; 
+    tr = new(); 
   endfunction
   
   
   task run();
     repeat(count) begin
-      assert(trans.randomize())else $error("Randomization FAILED");
-      mbx.put(trans.copy());
-      trans.display("GEN");
-      @(next);// here we are waiting to receive a flag from other classes
+      for(int i = 0; i<10; i++) begin
+        assert(tr.randomize) else $error("[GEN] : RANDOMIZATION FAILED");
+        mbx.put(tr.copy);
+        mbxref.put(tr.copy);
+        tr.display("GEN");
+        @(sconext);
+      end
     end
-    
-    -> done;
+    ->done;
   endtask
   
   
 endclass
-
-// lets test our generator class
-/*
-module tb;
-  
-  generator gen;
-  
-  mailbox #(transaction) mbx;
-  
-  initial begin
-    mbx = new();
-    
-    gen = new(mbx);
-    gen.count = 3;
-    gen.run();
-  end
-  
-endmodule
-
-*/
-
-/*lets create our Driver Class
- here are the tasks of a driver class
+//////////////////////////////////////////////////////////
  
- -> Receive transaction from generator
- -> Apply reset to DUT
- -> Apply transaction to DUT with the help of an interface
- -> Notify Generator about the complition of interface trigger(it's better to notify the generator by using the scoreboard, but if we decided to use this we have to scinchronise all the trigger of the notification event
-*/
-
-
 class driver;
-  virtual fifo_if interf;
-  transaction datac;// this is our data container
+  
+  transaction tr;
   mailbox #(transaction) mbx;
+  virtual dff_if vif;
   
-  //event next;
+ 
   
-  function new(mailbox #(transaction)mbx);
-    this.mbx = mbx;
+  
+  
+  function new( mailbox #(transaction) mbx);
+   this.mbx = mbx;
   endfunction
-  //reset the DUT
+  
   task reset();
-    //bare in mind that when ever you are assigning values to an interface signals you should use non-blocking assignement(<=) not (=) to avoid dropping values
-    interf.rst <= 1'b1;
-    interf.wr <=  1'b0;
-    interf.rd <= 1'b0;
-    interf.data_in <= 8'h00;
-    
-    repeat(5) @(posedge interf.clock);
-    interf.rst <= 1'b0;
+    vif.rst <= 1'b1;
+    repeat(5) @(posedge vif.clk);
+    vif.rst <= 1'b0;
+    @(posedge vif.clk);
+    $display("[DRV] : RESET DONE");
   endtask
-  // applying rundome stimulus to our dut
+  
+  
   task run();
-    
     forever begin
-      mbx.get(datac);
-      datac.display("DRV");
-      interf.wr <= datac.wr;
-      interf.rd <= datac.rd;
-      interf.data_in <= datac.data_in;
-      repeat(2) @(posedge interf.clock);
-      //->next;
+      mbx.get(tr);
+      vif.din <= tr.din;
+      tr.display("DRV");
+      @(posedge vif.clk);
     end
-    
-  endtask
+    endtask
   
-endclass 
-
-// here we are testing our driver class
-/*
-module tb;
-  
-  generator gen;
-  driver drv;
-  mailbox #(transaction) mbx;
-  event next;
-  fifo_if interf();
-  
-  fifo dut(interf.clock, interf.rd, interf.wr, interf.full, interf.empty, interf.data_in, interf.data_out, interf.rst);
-  
-  initial begin
-    interf.clock <= 0;
-  end
-  
-  always begin
-    #10 interf.clock <= ~interf.clock;
-  end
-  
-  initial begin
-    mbx = new();
-    gen = new(mbx);
-    drv = new(mbx);
-    drv.next = next;
-    gen.next = next;
-    drv.interf = interf;
-    gen.count = 3;
-   
-  end
-  
-  initial begin
-    fork
-      gen.run();
-      //drv.reset();
-      drv.run();
-    join
-    
-  end
-  
-  initial begin
-    #400;
-    $finish();
-  end
-  
-  initial begin
-    $dumpfile("dump.vcd"); $dumpvars;
-  end
-  
-endmodule
-*/
-
-// now it's time to create our monitor class
-
-/*
-	here are the task that the monitor should perform
-    
--> capture DUT
--> send response transaction to sco
--> also control  data to be send for specific operation (this is used incase of a bus protocol)
-*/
+endclass
+ 
+//////////////////////////////////////////////////////
+ 
 class monitor;
-  virtual fifo_if interf;
-  transaction trans;
+  
+  transaction tr;
   mailbox #(transaction) mbx;
+  virtual dff_if vif;
   
- // event next;
+ 
   
-  function new(mailbox #(transaction)mbx);
-    this.mbx = mbx;
+  function new( mailbox #(transaction) mbx);
+   this.mbx = mbx;
   endfunction
   
   task run();
-    trans = new();
+    tr = new();
     forever begin
-      repeat(2) @(posedge interf.clock);
-      trans.wr = interf.wr;
-	  trans.rd = interf.rd;
-      trans.data_in = interf.data_in;
-      trans.data_out = interf.data_out;
-      trans.full = interf.full;
-      trans.empty = interf.empty;
-      mbx.put(trans.copy());
-      trans.display("MON");
-      //@(next);
+       @(posedge vif.clk);
+       @(posedge vif.clk);
+       tr.dout = vif.dout;
+       mbx.put(tr);
+      tr.display("MON");
     end
   endtask
+  
 endclass
-
-
-// here we create our scoreboard class
-/*
-	here are the tasks that score board class needs to perform
--> receive trnasactions from monitor
--> store transaction : array, queue, Associative array;
--> compare the responses with expected result and this is done by one of the following methods:
-	1-> develop an algo inside the score board 
-    2-> get expected data from other classes 
-    3-> get expected data from other languages using (DPI)
-*/
-
+ 
+ 
+ 
+////////////////////////////////////////////////////
+ 
 class scoreboard;
   
-  transaction trans;
+  transaction tr;
+  transaction trref;
   mailbox #(transaction) mbx;
-  event next;// to notify the generator about when to send the next transaction 
-  
-  bit [7:0] din[$];
-  bit [7:0] temp;
-  
-  function new(mailbox #(transaction) mbx);
-    this.mbx = mbx;
+  mailbox #(transaction) mbxref;
+  event sconext;
+ 
+ 
+  function new( mailbox #(transaction) mbx,  mailbox #(transaction) mbxref);
+   this.mbx = mbx;
+   this.mbxref = mbxref;
   endfunction
   
   task run();
-    
     forever begin
-      
-      mbx.get(trans);
-      trans.display("SCO");
-      
-      if(trans.wr == 1'b1)begin
-        if(trans.full == 1'b0) begin
-           din.push_front(trans.data_in);
-          $display("DATA is pushed into the queue");
-        end
-        else $display("The FIFO is full");
-      end
-      
-      if(trans.rd == 1'b1) begin
-        
-        if(trans.empty == 1'b0) begin
-            temp = din.pop_back();
-
-            if(trans.data_out == temp) begin
-              $display("DATA is MACHED");
-            end
-          else $error("DATA MISSMACH");
-        end
-        else $display("the FIFO is EMPTY");
-      end
-      -> next;
+      mbx.get(tr);
+      mbxref.get(trref);
+      tr.display("SCO");
+      trref.display("REF");
+      if(tr.dout == trref.din)
+        $display("[SCO] : DATA MATCHED");
+      else
+        $display("[SCO] : DATA MISMATCHED"); 
+      ->sconext;
     end
   endtask
   
   
 endclass
-
-//let's test our scoreboard class
-
-/*module tb;
+ 
+////////////////////////////////////////////////////////
+ 
+class environment;
+ 
+    generator gen;
+    driver drv;
+    monitor mon;
+    scoreboard sco; 
   
-  scoreboard sco;
-  monitor mon;
-  mailbox #(transaction) mbx;
-  event next;
-  fifo_if interf();
-  
-  fifo dut(interf.clock, interf.rd, interf.wr, interf.full, interf.empty, interf.data_in, interf.data_out, interf.rst);
-  
-  initial begin
-    interf.clock <= 0;
-  end
-  
-  always begin
-    #10 interf.clock <= ~interf.clock;
-  end
-  
-  initial begin
-    mbx = new();
-    mon = new(mbx);
-    sco = new(mbx);
-    mon.next = next;
-    sco.next = next;
-    mon.interf = interf;
-   
-  end
-  
-  initial begin
-    fork
-      mon.run();
-      sco.run();
-    join
     
-  end
   
-  initial begin
-    #800;
-    $finish();
-  end
+    event next;  /// gen -> sco
   
-  initial begin
-    $dumpfile("dump.vcd"); $dumpvars;
-  end
-  
-endmodule
-*/
-
-class envirnment;  
-  generator gen;
-  driver drv;
-  monitor mon;
-  scoreboard sco;
-  
-  mailbox #(transaction) gdmbx;
-  
-  mailbox #(transaction) msmbx;
-  
-  virtual fifo_if interf;
-  
-  event gsnext;
-  
-  function new(virtual fifo_if intf);
+  mailbox #(transaction) gdmbx; ///gen - drv
     
-    
+     
+  mailbox #(transaction) msmbx;  /// mon - sco
+  
+  mailbox #(transaction) mbxref; ///// gen -> sco
+  
+    virtual dff_if vif;
+ 
+  
+  function new(virtual dff_if vif);
+       
     gdmbx = new();
-    gen = new(gdmbx);
+    mbxref = new();
+    
+    gen = new(gdmbx, mbxref);
     drv = new(gdmbx);
+    
     
     msmbx = new();
     mon = new(msmbx);
-    sco = new(msmbx);
+    sco = new(msmbx, mbxref);
     
-    this.interf = intf;
-    drv.interf = this.interf;
-    mon.interf = this.interf;
+    this.vif = vif;
+    drv.vif = this.vif;
+    mon.vif = this.vif;
     
-    gen.next = gsnext;
-    sco.next = gsnext;
-    
+    gen.sconext = next;
+    sco.sconext = next;
+  
+ 
   endfunction
   
   task pre_test();
@@ -404,56 +198,57 @@ class envirnment;
   endtask
   
   task test();
-    
-    fork
-      gen.run();
-      drv.run();
-      mon.run();
-      sco.run();
-    join_any
+  fork
+    gen.run();
+    drv.run();
+    mon.run();
+    sco.run();
+  join_any
   endtask
   
-  task pos_test();
-    wait(gen.done.triggered);
+  task post_test();
+    wait(gen.done.triggered);  
     $finish();
   endtask
   
   task run();
-    
     pre_test();
     test();
-    pos_test();
-    
+    post_test();
   endtask
   
+  
 endclass
-
-
-
-module tb;
-  
-  envirnment env;
-  
-  mailbox #(transaction) mbx;
-  fifo_if interf();
-  
-  fifo dut(interf.clock, interf.rd, interf.wr, interf.full, interf.empty, interf.data_in, interf.data_out, interf.rst);
-  
-  
-  initial begin
-    interf.clock <= 0;
-  end
-  
-  always begin
-    #10;
-    interf.clock <= ~interf.clock;
-  end
-  
-  initial begin
+ 
+/////////////////////////////////////////////////////
+ module tb;
     
-    env = new(interf);
-    env.gen.count = 20;
-    env.run();
-  end
-  
-endmodule
+   dff_if vif();
+ 
+   dff dut (vif);
+   
+    initial begin
+      vif.clk <= 0;
+    end
+    
+    always #10 vif.clk <= ~vif.clk;
+    
+    environment env;
+    
+    
+    
+    initial begin
+      env = new(vif);
+      env.gen.count = 30;
+      env.run();
+    end
+      
+    
+    initial begin
+      $dumpfile("dump.vcd");
+      $dumpvars;
+    end
+   
+    
+  endmodule
+ 
